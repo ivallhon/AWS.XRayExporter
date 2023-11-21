@@ -375,8 +375,9 @@ namespace XRay2OTLP
                     s.Status = new Status() { Code = Status.Types.StatusCode.Error };
             }
         }
-        
 
+
+      
         public void AddHttp(Span span, JsonElement segment)
         {
             JsonElement http;
@@ -433,6 +434,53 @@ namespace XRay2OTLP
 
             }
 
+        }
+
+        public void AddLinks(Span span, JsonElement segment)
+        {
+            JsonElement links;
+            if (segment.TryGetProperty(Properties.Links, out links))
+            {
+                JsonElement elem;
+
+                if (links.TryGetProperty(LinkAttributes.Attributes, out elem))
+                {
+                    if (Value(elem, LinkAttributes.Type) == LinkAttributes.TypeParent) //only process if it's a parent link
+                    {
+                        var refXrayTraceId = Value(links, Attributes.TraceId);
+                        var refXraySpanId = Value(links, Attributes.SegmentId);
+
+                        if (!String.IsNullOrEmpty(refXraySpanId) && !String.IsNullOrEmpty(refXrayTraceId))
+                        {
+                            var lnk = new Span.Types.Link()
+                            {
+                                TraceId = ConvertToByteString(ParseTraceId(refXrayTraceId)),
+                                SpanId = ConvertToByteString(ParseSpanId(refXraySpanId))
+                            };
+
+                            lnk.Attributes.Add(new KeyValue()
+                            {
+                                Key = AWSSemanticConventions.AWSXRayTraceIdAttribute,
+                                Value = new AnyValue()
+                                {
+                                    StringValue = refXrayTraceId
+                                }
+                            });
+
+                            lnk.Attributes.Add(new KeyValue()
+                            {
+                                Key = AWSSemanticConventions.AWSXRaySegmentIdAttribute,
+                                Value = new AnyValue()
+                                {
+                                    StringValue = refXraySpanId
+                                }
+                            });
+                        }
+                        
+                    }
+
+                }
+            }
         }
 
         public void AddXRayTraceContext(Span s, string XRayTraceId, string XRaySegementId)
