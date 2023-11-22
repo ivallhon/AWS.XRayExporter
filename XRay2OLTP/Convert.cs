@@ -7,9 +7,11 @@ using Opentelemetry.Proto.Resource.V1;
 using Opentelemetry.Proto.Trace.V1;
 using OpenTelemetry;
 using System;
+using System.Diagnostics;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Xml.Serialization;
 using XRay;
 using OTelSemConv = OpenTelemetry.SemanticConventions;
 using ResSemConv = OpenTelemetry.ResourceSemanticConventions;
@@ -24,6 +26,7 @@ namespace XRay2OTLP
         private readonly ILogger _logger;
 
         public readonly bool _SimulateRealtime = false;
+        public readonly bool _SimulateTraceId = true;
 
         public Convert(ILoggerFactory? loggerFactory)
         {
@@ -31,9 +34,10 @@ namespace XRay2OTLP
               ?? NullLoggerFactory.Instance.CreateLogger<Convert>();
         }
 #if DEBUG
-        public Convert(ILoggerFactory? loggerFactory, bool simulateRealtime) : this(loggerFactory)
+        public Convert(ILoggerFactory? loggerFactory, bool simulateRealtime, bool simulateTraceId) : this(loggerFactory)
         {
             _SimulateRealtime = simulateRealtime;
+            _SimulateTraceId = simulateTraceId;
         }
 
         internal int step = 0;
@@ -67,7 +71,7 @@ namespace XRay2OTLP
         internal string ParseTraceId(string traceid)
         {
 #if DEBUG
-            if (_SimulateRealtime) //generate a unique trace-id per run
+            if (_SimulateTraceId) //generate a unique trace-id per run
                 return BitConverter.ToString(Guid.NewGuid().ToByteArray()).Replace("-", string.Empty).ToLower();
             else
 #endif
@@ -438,45 +442,50 @@ namespace XRay2OTLP
 
         public void AddLinks(Span span, JsonElement segment)
         {
-            JsonElement links;
-            if (segment.TryGetProperty(Properties.Links, out links))
+            JsonElement link;
+            if (segment.TryGetProperty(Properties.Links, out link))
             {
-                JsonElement elem;
-
-                if (links.TryGetProperty(LinkAttributes.Attributes, out elem))
+                var links = link.EnumerateArray();
+                while (links.MoveNext())
                 {
-                    if (Value(elem, LinkAttributes.Type) == LinkAttributes.TypeParent) //only process if it's a parent link
+
+                    JsonElement elem;
+
+                    if (links.Current.TryGetProperty(LinkAttributes.Attributes, out elem))
                     {
-                        var refXrayTraceId = Value(links, Attributes.TraceId);
-                        var refXraySpanId = Value(links, Attributes.SegmentId);
-
-                        if (!String.IsNullOrEmpty(refXraySpanId) && !String.IsNullOrEmpty(refXrayTraceId))
+                        if (Value(elem, LinkAttributes.Type) == LinkAttributes.TypeParent) //only process if it's a parent link
                         {
-                            var lnk = new Span.Types.Link()
-                            {
-                                TraceId = ConvertToByteString(ParseTraceId(refXrayTraceId)),
-                                SpanId = ConvertToByteString(ParseSpanId(refXraySpanId))
-                            };
+                            var refXrayTraceId = Value(links.Current, Attributes.TraceId);
+                            var refXraySpanId = Value(links.Current, Attributes.SegmentId);
 
-                            lnk.Attributes.Add(new KeyValue()
+                            if (!String.IsNullOrEmpty(refXraySpanId) && !String.IsNullOrEmpty(refXrayTraceId))
                             {
-                                Key = AWSSemanticConventions.AWSXRayTraceIdAttribute,
-                                Value = new AnyValue()
+                                var lnk = new Span.Types.Link()
                                 {
-                                    StringValue = refXrayTraceId
-                                }
-                            });
+                                    TraceId = ConvertToByteString(ParseTraceId(refXrayTraceId)),
+                                    SpanId = ConvertToByteString(ParseSpanId(refXraySpanId))
+                                };
 
-                            lnk.Attributes.Add(new KeyValue()
-                            {
-                                Key = AWSSemanticConventions.AWSXRaySegmentIdAttribute,
-                                Value = new AnyValue()
+                                lnk.Attributes.Add(new KeyValue()
                                 {
-                                    StringValue = refXraySpanId
-                                }
-                            });
+                                    Key = AWSSemanticConventions.AWSXRayTraceIdAttribute,
+                                    Value = new AnyValue()
+                                    {
+                                        StringValue = refXrayTraceId
+                                    }
+                                });
+
+                                lnk.Attributes.Add(new KeyValue()
+                                {
+                                    Key = AWSSemanticConventions.AWSXRaySegmentIdAttribute,
+                                    Value = new AnyValue()
+                                    {
+                                        StringValue = refXraySpanId
+                                    }
+                                });
+                            }
+
                         }
-                        
                     }
 
                 }
@@ -516,6 +525,8 @@ namespace XRay2OTLP
 
             var xraySpanId = Value(segment, Attributes.SegmentId);
 
+            Debug.WriteLine(xrayTraceId + " ; " +xrayParentSpanId);
+
             resSpan.Resource = new Resource();
 
 
@@ -537,7 +548,7 @@ namespace XRay2OTLP
                 span.ParentSpanId = ConvertToByteString(ParseSpanId(xrayParentSpanId));
             else
                 span.Kind = Span.Types.SpanKind.Server;
-
+            
             AddXRayTraceContext(span, xrayTraceId, xraySpanId);
 
             span.Name = Value(segment, Attributes.Name);
@@ -549,6 +560,7 @@ namespace XRay2OTLP
                 origin = Value(segment, Properties.Origin);
             TryAddAttribute(span, AWSSemanticConventions.AWSXRaySegmentOriginAttribute, origin);
 
+            AddLinks(span, segment);
             AddAWSToSpan(span, segment);
             AddHttp(span, segment);
             AddSql(span, segment);
