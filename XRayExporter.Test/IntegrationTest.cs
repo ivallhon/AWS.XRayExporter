@@ -22,7 +22,7 @@ namespace XRayExporter.Test
             AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
             string tracesJson = File.ReadAllText("data/batchgettraces.json");
 
-            var conv = new XRay2OTLP.Convert(null, true);
+            var conv = new XRay2OTLP.Convert(null, true, true);
             var exportTraceServiceRequest = conv.FromXRay(tracesJson);
 
             var client = new HttpClient();
